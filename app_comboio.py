@@ -97,7 +97,7 @@ def carregar_frotas():
     if not token:
         return []
 
-    caminho = "Shared Documents/ARQUIVO APP COMBOIO/12 - LISTA_TRATADA.xlsx"
+    caminho = "Shared documents/ARQUIVO APP COMBOIO/12 - LISTA_TRATADA.xlsx"
     url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drive/root:/{caminho}:/content"
 
     headers = {"Authorization": f"Bearer {token}"}
