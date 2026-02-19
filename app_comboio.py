@@ -24,7 +24,7 @@ CAPACIDADE_MAXIMA = 15000
 USUARIOS = {
     "central": {
         "senha": "central@123",
-        "lista": "9c32dccb-c6e2-4154-a391-e9a493d49bec"  # Controle_Combustivel
+        "lista": "9c32dccb-c6e2-4154-a391-e9a493d49bec"
     },
     "roraima": {
         "senha": "roraima@123",
@@ -52,13 +52,16 @@ USUARIOS = {
     }
 }
 
-# Nomes dos seus arquivos na pasta
+# ==========================
+# ARQUIVOS DO SISTEMA
+# ==========================
 ARQUIVO_LOGO = "logo_ms.png"
 ARQUIVO_VIDEO = "abertura.mp4"
 
 # ==========================
 # FUNÇÕES DE APOIO
 # ==========================
+
 def calcular_diferenca_odometro(inicial, final):
     try:
         inicial, final = float(inicial), float(final)
@@ -117,8 +120,19 @@ def enviar_dados_sharepoint(token, LIST_ID, dados):
         return False
 
 # ==========================
+# CARREGAR LISTA DE FROTAS DO SHAREPOINT
+# ==========================
+
+@st.cache_data(ttl=300)
+def carregar_frotas():
+    url = "https://metalcana.sharepoint.com/sites/AppComboio/_layouts/15/download.aspx?SourceUrl=/sites/AppComboio/Documentos%20Compartilhados/ARQUIVO%20APP%20COMBOIO/12%20-%20LISTA_TRATADA.xlsx"
+    df = pd.read_excel(url)
+    return df["FROTA"].dropna().unique().tolist()
+
+# ==========================
 # DESIGN E LOGIN
 # ==========================
+
 st.set_page_config(page_title="Gestão de Comboio", page_icon="🚛", layout="wide")
 
 st.markdown("""
@@ -161,6 +175,7 @@ if not st.session_state['logado']:
 # ==========================
 # SISTEMA PRINCIPAL
 # ==========================
+
 LIST_ID = st.session_state["LIST_ID"]
 
 with st.sidebar:
@@ -210,10 +225,13 @@ aba1, aba2, aba3 = st.tabs(["⛽ Abastecer", "📥 Entrada Usina", "📊 Fechame
 # === ABA 1: SAÍDA ===
 with aba1:
     st.subheader("Registrar Saída")
+
+    lista_frotas = carregar_frotas()
+
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            f = st.text_input("Frota")
+            f = st.selectbox("Frota", lista_frotas)
             h = st.number_input("Horímetro Atual", min_value=0.0)
             l = st.number_input("Litros Abastecidos", min_value=0.0, step=1.0)
         with c2:
