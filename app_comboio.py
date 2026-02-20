@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime
 import time
 import os
 
@@ -17,7 +17,7 @@ SITE_ID = st.secrets["SITE_ID"]
 GRAPH_URL = "https://graph.microsoft.com/v1.0"
 CAPACIDADE_MAXIMA = 15000
 
-# ID da lista de frotas no SharePoint
+# LISTA DE FROTAS (LISTA_TRATADA)
 LISTA_FROTAS_ID = "20F995BE-9493-4516-87D5-C9E794B1164F"
 
 # ==========================
@@ -77,7 +77,7 @@ def enviar_dados_sharepoint(token, LIST_ID, dados):
     requests.post(url, headers=headers, json=payload)
 
 # ==========================
-# CARREGAR FROTAS DO SHAREPOINT (SEM EXCEL)
+# CARREGAR FROTAS DO SHAREPOINT
 # ==========================
 
 @st.cache_data(ttl=300)
@@ -86,7 +86,8 @@ def carregar_frotas(token):
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers)
     itens = r.json().get("value", [])
-    return sorted({i["fields"]["Title"] for i in itens if "Title" in i["fields"]})
+    frotas = [i["fields"]["Title"] for i in itens if "Title" in i["fields"]]
+    return sorted(set(frotas))
 
 # ==========================
 # DESIGN E LOGIN
@@ -98,12 +99,10 @@ if 'logado' not in st.session_state:
     st.session_state['logado'] = False
 
 if not st.session_state['logado']:
-    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
-    with col_l2:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
         if os.path.exists(ARQUIVO_LOGO):
             st.image(ARQUIVO_LOGO, width=250)
-
-        st.markdown("<h3 style='text-align: center;'>Sistema de Gestão de Comboio</h3>", unsafe_allow_html=True)
 
         if os.path.exists(ARQUIVO_VIDEO):
             st.video(ARQUIVO_VIDEO, autoplay=True, loop=True, muted=True)
@@ -141,12 +140,29 @@ token = obter_token()
 dados_sp = obter_dados_sharepoint(token, LIST_ID)
 df = pd.DataFrame(dados_sp)
 
-saldo = (
-    df[df["Tipo_Operacao"] == "Entrada"]["Litros"].sum()
-    - df[df["Tipo_Operacao"] == "Saida"]["Litros"].sum()
-) if not df.empty else 0
+# ==========================
+# CÁLCULO DE SALDO E ÚLTIMO RELÓGIO
+# ==========================
 
-ult_fim = df.iloc[0]["Comboio_Final"] if not df.empty else 0
+if not df.empty:
+    df['Data_Dt'] = pd.to_datetime(df['Created']).dt.date
+    df['Hora'] = pd.to_datetime(df['Created']).dt.strftime('%H:%M')
+
+    ent = pd.to_numeric(df[df['Tipo_Operacao'] == 'Entrada']['Litros'], errors='coerce').sum()
+    sai = pd.to_numeric(df[df['Tipo_Operacao'] == 'Saida']['Litros'], errors='coerce').sum()
+    saldo = ent - sai
+
+    try:
+        ult_fim = float(df.iloc[0]['Comboio_Final'])
+    except:
+        ult_fim = 0
+else:
+    saldo = 0
+    ult_fim = 0
+
+# ==========================
+# ABAS
+# ==========================
 
 aba1, aba2, aba3 = st.tabs(["⛽ Abastecer", "📥 Entrada Usina", "📊 Fechamento"])
 
@@ -158,6 +174,7 @@ with aba1:
     st.subheader("Registrar Saída")
 
     lista_frotas = carregar_frotas(token)
+    lista_frotas = [""] + lista_frotas  # deixa o dropdown vazio
 
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -175,13 +192,16 @@ with aba1:
 
         if st.form_submit_button("Salvar Registro"):
 
-            # 🚨 TRAVA DE ESTOQUE NEGATIVO
+            if not f:
+                st.error("Selecione uma frota válida.")
+                st.stop()
+
             if saldo <= 0:
                 st.error("Caminhão tanque sem estoque disponível.")
                 st.stop()
 
             if l > saldo:
-                st.error(f"Estoque insuficiente. Saldo: {saldo:.0f} L")
+                st.error(f"Estoque insuficiente. Saldo atual: {saldo:.0f} L")
                 st.stop()
 
             enviar_dados_sharepoint(token, LIST_ID, {
@@ -223,3 +243,39 @@ with aba2:
             st.success("Entrada registrada!")
             time.sleep(1)
             st.rerun()
+
+# ==========================
+# ABA 3 — FECHAMENTO
+# ==========================
+
+with aba3:
+    st.header("Conferência do Dia")
+
+    ds = st.date_input("Filtrar Data", datetime.today())
+
+    if not df.empty:
+        df_d = df[df['Data_Dt'] == ds]
+
+        s_sis = pd.to_numeric(df_d[df_d['Tipo_Operacao'] == 'Saida']['Litros'], errors='coerce').sum()
+        s_mec = sum(calcular_diferenca_odometro(r.get('Comboio_Inicial', 0), r.get('Comboio_Final', 0))
+                    for _, r in df_d[df_d['Tipo_Operacao'] == 'Saida'].iterrows())
+        div = s_mec - s_sis
+
+        cor = "#28a745" if saldo > 5000 else "#ffc107" if saldo > 2000 else "#dc3545"
+        st.markdown(
+            f'<div style="background-color: {cor}; padding:20px; border-radius:10px; color:white; text-align:center;">'
+            f'<h2>{saldo:,.0f} L</h2>Estoque Disponível</div>',
+            unsafe_allow_html=True
+        )
+
+        col1, col2 = st.columns(2)
+        col1.metric(f"Total Lançado ({ds.strftime('%d/%m')})", f"{s_sis:,.0f} L")
+        col2.metric("Diferença (Mecânico vs Sistema)", f"{div:,.0f} L",
+                    delta="⚠️ Verificar" if abs(div) > 5 else "OK")
+
+        if not df_d.empty:
+            st.subheader("Relatório de Movimentação")
+            st.dataframe(df_d[['Hora', 'Frota', 'Litros', 'Comboio_Final']],
+                         use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum dado disponível.")
