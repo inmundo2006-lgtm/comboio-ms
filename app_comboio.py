@@ -65,9 +65,14 @@ def enviar_dados_sharepoint(token, lista, dados):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {"fields": dados}
     try:
-        requests.post(url, headers=headers, json=payload).raise_for_status()
+        r = requests.post(url, headers=headers, json=payload)
+        if not r.ok:
+            erro = r.json().get("error", {}).get("message", r.text)
+            st.error(f"Erro ao salvar ({r.status_code}): {erro}")
+            return False
         return True
-    except:
+    except Exception as e:
+        st.error(f"Erro de conexao: {e}")
         return False
 
 @st.cache_data(ttl=300)
