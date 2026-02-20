@@ -22,15 +22,39 @@ CAPACIDADE_MAXIMA = 15000
 # USUÁRIOS E LISTAS
 # ==========================
 USUARIOS = {
-    "central": {"senha": "central@123", "lista": "9c32dccb-c6e2-4154-a391-e9a493d49bec"},
-    "roraima": {"senha": "roraima@123", "lista": "936bf167-ff54-4031-a267-20faa46a1eee"},
-    "helicoptero": {"senha": "helico@123", "lista": "0172a697-5094-4495-96d0-25d4f8dddbcb"},
-    "cianorte": {"senha": "cianorte@123", "lista": "d11dc55c-31ff-4c81-bed0-27df39a99bf9"},
-    "navirai": {"senha": "navirai@123", "lista": "262f461c-9758-484c-b701-e71f2ade1f3e"},
-    "maracaju": {"senha": "maracaju@123", "lista": "f67cc033-80fc-4fef-a859-497676b0b539"},
-    "reserva": {"senha": "reserva@123", "lista": "31df8ece-779f-4ca5-a1b6-3bf0e46ffd6f"}
+    "central": {
+        "senha": "central@123",
+        "lista": "9c32dccb-c6e2-4154-a391-e9a493d49bec"
+    },
+    "roraima": {
+        "senha": "roraima@123",
+        "lista": "936bf167-ff54-4031-a267-20faa46a1eee"
+    },
+    "helicoptero": {
+        "senha": "helico@123",
+        "lista": "0172a697-5094-4495-96d0-25d4f8dddbcb"
+    },
+    "cianorte": {
+        "senha": "cianorte@123",
+        "lista": "d11dc55c-31ff-4c81-bed0-27df39a99bf9"
+    },
+    "navirai": {
+        "senha": "navirai@123",
+        "lista": "262f461c-9758-484c-b701-e71f2ade1f3e"
+    },
+    "maracaju": {
+        "senha": "maracaju@123",
+        "lista": "f67cc033-80fc-4fef-a859-497676b0b539"
+    },
+    "reserva": {
+        "senha": "reserva@123",
+        "lista": "31df8ece-779f-4ca5-a1b6-3bf0e46ffd6f"
+    }
 }
 
+# ==========================
+# ARQUIVOS DO SISTEMA
+# ==========================
 ARQUIVO_LOGO = "logo_ms.png"
 ARQUIVO_VIDEO = "abertura.mp4"
 
@@ -94,6 +118,16 @@ def enviar_dados_sharepoint(token, LIST_ID, dados):
         return True
     except:
         return False
+
+# ==========================
+# CARREGAR LISTA DE FROTAS DO SHAREPOINT
+# ==========================
+
+@st.cache_data(ttl=300)
+def carregar_frotas():
+    url = "https://metalcana.sharepoint.com/sites/AppComboio/_layouts/15/download.aspx?SourceUrl=/sites/AppComboio/Documentos%20Compartilhados/ARQUIVO%20APP%20COMBOIO/12%20-%20LISTA_TRATADA.xlsx"
+    df = pd.read_excel(url)
+    return df["FROTA"].dropna().unique().tolist()
 
 # ==========================
 # DESIGN E LOGIN
@@ -160,6 +194,7 @@ if not token:
     st.error("Erro de Conexão")
     st.stop()
 
+# Dados do SharePoint
 dados_sp = obter_dados_sharepoint(token, LIST_ID)
 colunas_esperadas = ['Tipo_Operacao', 'Litros', 'Frota', 'Horas_Motor', 'Comboio_Final', 'Comboio_Inicial', 'Created', 'Entrada_Usina']
 
@@ -190,10 +225,13 @@ aba1, aba2, aba3 = st.tabs(["⛽ Abastecer", "📥 Entrada Usina", "📊 Fechame
 # === ABA 1: SAÍDA ===
 with aba1:
     st.subheader("Registrar Saída")
+
+    lista_frotas = carregar_frotas()
+
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            f = st.text_input("Frota")
+            f = st.selectbox("Frota", lista_frotas)
             h = st.number_input("Horímetro Atual", min_value=0.0)
             l = st.number_input("Litros Abastecidos", min_value=0.0, step=1.0)
         with c2:
@@ -208,12 +246,6 @@ with aba1:
                     st.warning("⚠️ Divergência no relógio mecânico!")
 
         if st.form_submit_button("💾 Salvar Registro", type="primary", use_container_width=True):
-
-            # 🚨 BLOQUEIO DE ESTOQUE NEGATIVO
-            if l > saldo:
-                st.error(f"❌ Estoque insuficiente! Saldo atual: {saldo:.0f} L")
-                st.stop()
-
             if f and l > 0 and f_od > 0:
                 with st.spinner("Enviando..."):
                     if enviar_dados_sharepoint(token, LIST_ID, {
