@@ -89,7 +89,7 @@ def carregar_frotas(token):
 
 def preparar_dataframe(dados_sp):
     colunas = ['Tipo_Operacao', 'Litros', 'Frota', 'Horas_Motor',
-               'Comboio_Final', 'Comboio_Inicial', 'Created', 'Entrada_Usina']
+               'Comboio_Final', 'Comboio_Inicial', 'Created', 'Entrada_Usina', 'Observacao']
 
     if not dados_sp:
         return pd.DataFrame(columns=colunas + ['Data_Dt', 'Hora'])
@@ -209,6 +209,13 @@ with aba1:
                 if abs(dif - l) > 2:
                     st.warning("Divergencia no relogio mecanico!")
 
+        obs = st.text_area(
+            "Observacao",
+            placeholder="Ex: Veiculo terceiro - Transportadora XYZ / Pagamento posterior...",
+            height=80,
+            help="Use este campo para registrar veiculos de terceiros, pagamentos posteriores ou qualquer informacao adicional."
+        )
+
         if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
             if not f:
                 st.error("Selecione uma frota valida.")
@@ -225,7 +232,8 @@ with aba1:
                         "Litros": l,
                         "Horas_Motor": h,
                         "Comboio_Inicial": ult_fim,
-                        "Comboio_Final": f_od
+                        "Comboio_Final": f_od,
+                        "Observacao": obs
                     }):
                         st.success("Registrado com sucesso!")
                         time.sleep(1)
@@ -293,5 +301,5 @@ with aba3:
             st.info(f"Nenhum registro no dia {ds.strftime('%d/%m/%Y')}.")
         else:
             st.subheader("Relatorio de Movimentacao")
-            colunas_exibir = [c for c in ['Hora', 'Tipo_Operacao', 'Frota', 'Litros', 'Comboio_Inicial', 'Comboio_Final'] if c in df_d.columns]
+            colunas_exibir = [c for c in ['Hora', 'Tipo_Operacao', 'Frota', 'Litros', 'Comboio_Inicial', 'Comboio_Final', 'Observacao'] if c in df_d.columns]
             st.dataframe(df_d[colunas_exibir], use_container_width=True, hide_index=True)
