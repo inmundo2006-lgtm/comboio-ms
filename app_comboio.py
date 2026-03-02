@@ -108,6 +108,17 @@ def preparar_dataframe(dados_sp):
 
     return df
 
+# ==================== NOVA FUNÇÃO ====================
+def obter_ultimo_horimetro(df, frota):
+    """Retorna o último horímetro registrado para uma frota específica (apenas Saídas)"""
+    if df.empty or not frota:
+        return 0.0
+    df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'] == 'Saida')].copy()
+    if df_frota.empty:
+        return 0.0
+    df_frota = df_frota.sort_values(by='Created', ascending=False)
+    return float(df_frota.iloc[0]['Horas_Motor'])
+
 # ==========================
 # DESIGN
 # ==========================
@@ -189,6 +200,7 @@ if not df.empty and 'Tipo_Operacao' in df.columns:
 # ==========================
 aba1, aba2, aba3 = st.tabs(["Abastecer", "Entrada Usina", "Fechamento"])
 
+# ==================== ABA ABASTECER (ATUALIZADA) ====================
 with aba1:
     st.subheader("Registrar Saida")
     lista_frotas = [""] + carregar_frotas(token)
@@ -196,9 +208,62 @@ with aba1:
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            f = st.selectbox("Frota", lista_frotas)
-            h = st.number_input("Horimetro Atual", min_value=0.0)
+            f = st.selectbox("Frota", lista_frotas, key="select_frota")
+            
+            # Último horímetro registrado (somente leitura)
+            ultimo_h = obter_ultimo_horimetro(df, f)
+            col_ant1, col_ant2 = st.columns([3, 1])
+            with col_ant1:
+                st.markdown("**Horímetro Anterior da Frota**")
+            with col_ant2:
+                st.metric(label="", value=f"{ultimo_h:,.1f}", label_visibility="hidden")
+            
+            # Horímetro que o usuário digita
+            h = st.number_input(
+                "Horimetro Final (Atual)",
+                min_value=0.0,
+                step=0.1,
+                format="%.1f"
+            )
+            
+            # PRÉVIA + CHECKBOX DE REGRESSIVO
+            aceitar_regressivo = False
+            motivo_extra = ""
+            
+            if f:
+                diferenca = h - ultimo_h
+                
+                if diferenca > 0:
+                    st.success(f"✅ **Horas Rodadas:** {diferenca:,.1f} horas")
+                
+                elif diferenca < 0:
+                    st.error(f"⚠️ **Horímetro Regressivo** em {-diferenca:,.1f} horas!")
+                    
+                    aceitar_regressivo = st.checkbox(
+                        "✅ Permitir salvar mesmo com horímetro regressivo",
+                        help="Marque APENAS em caso de troca de módulo, defeito ou troca de painel"
+                    )
+                    
+                    if aceitar_regressivo:
+                        motivo = st.selectbox(
+                            "Motivo do horímetro regressivo:",
+                            [
+                                "Troca de Módulo / Horímetro",
+                                "Horímetro com defeito",
+                                "Troca de Painel",
+                                "Outro"
+                            ]
+                        )
+                        if motivo == "Outro":
+                            motivo_extra = st.text_input("Descreva o motivo:")
+                        else:
+                            motivo_extra = motivo
+                
+                else:
+                    st.warning("Nenhuma hora rodou ainda")
+
             l = st.number_input("Litros Abastecidos", min_value=0.0, step=1.0)
+
         with c2:
             st.info(f"Relogio Inicial: **{ult_fim:05.0f}**")
             sug = prever_odometro_final(ult_fim, l)
@@ -212,8 +277,7 @@ with aba1:
         obs = st.text_area(
             "Observacao",
             placeholder="Ex: Veiculo terceiro - Transportadora XYZ / Pagamento posterior...",
-            height=80,
-            help="Use este campo para registrar veiculos de terceiros, pagamentos posteriores ou qualquer informacao adicional."
+            height=80
         )
 
         if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
@@ -223,7 +287,18 @@ with aba1:
                 st.error("Caminhao tanque sem estoque disponivel.")
             elif l > saldo:
                 st.error(f"Estoque insuficiente. Saldo atual: {saldo:.0f} L")
-            elif l > 0 and f_od > 0:
+            elif l <= 0 or f_od <= 0:
+                st.error("Preencha os campos de litros e relógio final.")
+            elif h < ultimo_h and not aceitar_regressivo:
+                st.error("❌ Horímetro regressivo detectado! Marque o checkbox e informe o motivo.")
+            elif h < ultimo_h and aceitar_regressivo and not motivo_extra:
+                st.error("É obrigatório informar o motivo quando o horímetro é regressivo.")
+            else:
+                # Adiciona o motivo automaticamente na observação
+                obs_final = obs.strip()
+                if h < ultimo_h and aceitar_regressivo and motivo_extra:
+                    obs_final = f"[HORÍMETRO REGRESSIVO - {motivo_extra}] {obs_final}".strip()
+
                 with st.spinner("Enviando..."):
                     if enviar_dados_sharepoint(token, LISTA_ATUAL, {
                         "Title": f"Saida - {f}",
@@ -233,14 +308,13 @@ with aba1:
                         "Horas_Motor": h,
                         "Comboio_Inicial": ult_fim,
                         "Comboio_Final": f_od,
-                        "Observacao": obs
+                        "Observacao": obs_final
                     }):
                         st.success("Registrado com sucesso!")
                         time.sleep(1)
                         st.rerun()
-            else:
-                st.error("Preencha todos os campos corretamente.")
 
+# ==================== ABA ENTRADA USINA (sem alteração) ====================
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
     esp = CAPACIDADE_MAXIMA - saldo
@@ -264,11 +338,11 @@ with aba2:
             else:
                 st.error("Quantidade invalida ou acima da capacidade do tanque.")
 
+# ==================== ABA FECHAMENTO (sem alteração) ====================
 with aba3:
     st.header("Conferencia do Dia")
     ds = st.date_input("Filtrar Data", datetime.today())
 
-    # Saldo sempre visivel
     cor = "#28a745" if saldo > 5000 else "#ffc107" if saldo > 2000 else "#dc3545"
     st.markdown(
         f'<div style="background-color:{cor};" class="card-stock">'
