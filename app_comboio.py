@@ -108,7 +108,6 @@ def preparar_dataframe(dados_sp):
 
     return df
 
-# ==================== FUNÇÃO ATUALIZADA ====================
 def obter_ultimo_horimetro(df, frota):
     """Retorna o último horímetro + data do último registro"""
     if df.empty or not frota:
@@ -203,7 +202,7 @@ with aba1:
     st.subheader("Registrar Saida")
     lista_frotas = [""] + carregar_frotas(token)
 
-    # ==================== PARTE QUE ATUALIZA AO VIVO ====================
+    # Atualiza AO VIVO ao escolher a frota
     f = st.selectbox("Frota", lista_frotas, key="frota_selecionada")
 
     ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
@@ -226,21 +225,28 @@ with aba1:
 
         diferenca = h - ultimo_h
 
-        # Preview em tempo real + validação de 24h
+        # Preview em tempo real + validação de horas reais
         if diferenca > 0:
             st.success(f"✅ **Horas Rodadas:** {diferenca:,.1f} horas")
             
-            # Validação realista (baseada no tempo real entre registros)
             if ultima_data:
-                horas_reais = (datetime.now() - ultima_data).total_seconds() / 3600
-                if diferenca > horas_reais + 6:   # tolerância de 6h
-                    st.warning(f"⚠️ **Avanço suspeito!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
+                try:
+                    # Correção do erro: usa pd.Timestamp.now() e remove timezone
+                    agora = pd.Timestamp.now().tz_localize(None)
+                    ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
+                    horas_reais = (agora - ultima_naive).total_seconds() / 3600
+                    
+                    if diferenca > horas_reais + 8:   # tolerância de 8 horas (realista)
+                        st.warning(f"⚠️ **Avanço suspeito!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
+                except:
+                    pass  # segurança extra caso haja qualquer problema de data
+        
         elif diferenca < 0:
             st.error(f"⚠️ **Horímetro Regressivo** em {-diferenca:,.1f} horas")
         else:
             st.info("Nenhuma hora rodou ainda")
 
-    # ==================== FORMULÁRIO DE SALVAMENTO ====================
+    # ==================== FORMULÁRIO ====================
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -285,7 +291,7 @@ with aba1:
                         time.sleep(1)
                         st.rerun()
 
-# ==================== ABA 2 E 3 (sem alteração) ====================
+# ==================== ABA 2 E 3 (inalteradas) ====================
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
     esp = CAPACIDADE_MAXIMA - saldo
