@@ -87,29 +87,40 @@ def carregar_frotas(token):
     except:
         return []
 
+@st.cache_data(ttl=300)
+def carregar_tipos_medicao(token):
+    """Carrega automaticamente do SharePoint: frota → 'H' ou 'KM'"""
+    url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{LISTA_FROTAS_ID}/items?expand=fields&$top=5000"
+    headers = {"Authorization": f"Bearer {token}"}
+    tipos = {}
+    try:
+        r = requests.get(url, headers=headers)
+        for item in r.json().get("value", []):
+            fields = item.get("fields", {})
+            frota = fields.get("Title")
+            tipo = fields.get("TipoMedicao", "H")  # default = Horas se não tiver coluna ainda
+            if frota:
+                tipos[frota] = "H" if tipo.upper() in ["H", "HORAS", "HORA"] else "KM"
+    except:
+        pass
+    return tipos
+
 def preparar_dataframe(dados_sp):
     colunas = ['Tipo_Operacao', 'Litros', 'Frota', 'Horas_Motor',
                'Comboio_Final', 'Comboio_Inicial', 'Created', 'Entrada_Usina', 'Observacao']
-
     if not dados_sp:
         return pd.DataFrame(columns=colunas + ['Data_Dt', 'Hora'])
-
     df = pd.DataFrame(dados_sp)
-
     for col in colunas:
         if col not in df.columns:
             df[col] = 0
-
     df['Data_Dt'] = pd.to_datetime(df['Created'], errors='coerce').dt.date
     df['Hora'] = pd.to_datetime(df['Created'], errors='coerce').dt.strftime('%H:%M')
-
     for col in ['Litros', 'Horas_Motor', 'Comboio_Final', 'Comboio_Inicial', 'Entrada_Usina']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
     return df
 
 def obter_ultimo_horimetro(df, frota):
-    """Retorna o último horímetro + data do último registro"""
     if df.empty or not frota:
         return 0.0, None
     df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'] == 'Saida')].copy()
@@ -182,6 +193,7 @@ if not token:
 
 dados_sp = obter_dados_sharepoint(token, LISTA_ATUAL)
 df = preparar_dataframe(dados_sp)
+TIPOS = carregar_tipos_medicao(token)   # ← carrega automaticamente do SharePoint
 
 saldo, ult_fim = 0, 0
 if not df.empty and 'Tipo_Operacao' in df.columns:
@@ -202,21 +214,25 @@ with aba1:
     st.subheader("Registrar Saida")
     lista_frotas = [""] + carregar_frotas(token)
 
-    # Atualiza AO VIVO ao escolher a frota
     f = st.selectbox("Frota", lista_frotas, key="frota_selecionada")
+
+    tipo_medicao = TIPOS.get(f, "H")          # pega do SharePoint
+    unidade = "h" if tipo_medicao == "H" else "km"
+    label_anterior = "Horímetro Anterior da Frota" if tipo_medicao == "H" else "Odômetro Anterior da Frota"
+    label_rodado = "Horas Rodadas" if tipo_medicao == "H" else "Quilômetros Rodados"
 
     ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
 
     if f:
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.metric("**Horímetro Anterior da Frota**", f"{ultimo_h:,.1f} h")
+            st.metric(f"**{label_anterior}**", f"{ultimo_h:,.1f} {unidade}")
         with col2:
             if ultima_data:
                 st.caption(f"Último abastecimento: {ultima_data.strftime('%d/%m/%Y %H:%M')}")
 
         h = st.number_input(
-            "Horimetro Final (Atual)",
+            f"{label_anterior.replace('Anterior', 'Final (Atual)')}",
             min_value=0.0,
             step=0.1,
             format="%.1f",
@@ -225,28 +241,23 @@ with aba1:
 
         diferenca = h - ultimo_h
 
-        # Preview em tempo real + validação de horas reais
         if diferenca > 0:
-            st.success(f"✅ **Horas Rodadas:** {diferenca:,.1f} horas")
+            st.success(f"✅ **{label_rodado}:** {diferenca:,.1f} {unidade}")
             
-            if ultima_data:
+            if tipo_medicao == "H" and ultima_data:
                 try:
-                    # Correção do erro: usa pd.Timestamp.now() e remove timezone
                     agora = pd.Timestamp.now().tz_localize(None)
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
-                    
-                    if diferenca > horas_reais + 8:   # tolerância de 8 horas (realista)
+                    if diferenca > horas_reais + 8:
                         st.warning(f"⚠️ **Avanço suspeito!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
                 except:
-                    pass  # segurança extra caso haja qualquer problema de data
-        
+                    pass
         elif diferenca < 0:
-            st.error(f"⚠️ **Horímetro Regressivo** em {-diferenca:,.1f} horas")
+            st.error(f"⚠️ **Valor Regressivo** em {-diferenca:,.1f} {unidade}")
         else:
-            st.info("Nenhuma hora rodou ainda")
+            st.info("Nenhum avanço registrado ainda")
 
-    # ==================== FORMULÁRIO ====================
     with st.form("f_saida", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -291,7 +302,7 @@ with aba1:
                         time.sleep(1)
                         st.rerun()
 
-# ==================== ABA 2 E 3 (inalteradas) ====================
+# ==================== ABAS 2 E 3 (inalteradas) ====================
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
     esp = CAPACIDADE_MAXIMA - saldo
@@ -330,7 +341,6 @@ with aba3:
         st.info("Nenhum registro encontrado para esta unidade.")
     else:
         df_d = df[df['Data_Dt'] == ds].copy()
-
         saidas_dia = df_d[df_d['Tipo_Operacao'] == 'Saida']
         s_sis = saidas_dia['Litros'].sum()
         s_mec = sum(
