@@ -244,6 +244,10 @@ with aba1:
 
         diferenca = h - ultimo_h
 
+        # Validação do horímetro
+        horimetro_invalido = False
+        st.session_state["horimetro_invalido"] = False
+
         if diferenca > 0:
             st.success(f"✅ **{label_rodado}:** {diferenca:,.1f} {unidade}")
 
@@ -252,8 +256,10 @@ with aba1:
                     agora = pd.Timestamp.now().tz_localize(None)
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
-                    if diferenca > horas_reais + 8:
-                        st.warning(f"⚠️ **Favor conferir novamente!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
+                    if diferenca > horas_reais + 6:  # tolerância de 6h
+                        st.error(f"⚠️ **Favor conferir novamente!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento, mas o avanço informado foi de {diferenca:.1f}h.")
+                        horimetro_invalido = True
+                        st.session_state["horimetro_invalido"] = True
                 except:
                     pass
         elif diferenca < 0:
@@ -280,6 +286,8 @@ with aba1:
         if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
             if not f:
                 st.error("Selecione uma frota valida.")
+            elif st.session_state.get("horimetro_invalido", False):
+                st.error("Corrija o horímetro antes de salvar.")
             elif saldo <= 0:
                 st.error("Caminhao tanque sem estoque disponivel.")
             elif l > saldo:
