@@ -250,11 +250,11 @@ with aba1:
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
                     if diferenca > horas_reais + 8:
-                        st.warning(f"⚠️ **Avanço suspeito!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
+                        st.warning(f"⚠️ **Favor conferir novamente!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento.")
                 except:
                     pass
         elif diferenca < 0:
-            st.error(f"⚠️ **Valor Regressivo** em {-diferenca:,.1f} {unidade}")
+            st.error(f"⚠️ **Valor abaixo do esperado!** Tem certeza? Se sim, justifique no campo Observação. (Diferença: {-diferenca:,.1f} {unidade})")
         else:
             st.info("Nenhum avanço registrado ainda")
 
@@ -300,6 +300,8 @@ with aba1:
                     }):
                         st.success("Registrado com sucesso!")
                         time.sleep(1)
+                        st.session_state["frota_selecionada"] = ""   # ← limpa o selectbox
+                        st.session_state["horimetro_final"] = 0.0    # ← limpa o horímetro
                         st.rerun()
 
 # ==================== ABAS 2 E 3 (inalteradas) ====================
