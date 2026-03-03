@@ -214,7 +214,10 @@ with aba1:
     st.subheader("Registrar Saida")
     lista_frotas = [""] + carregar_frotas(token)
 
-    f = st.selectbox("Frota", lista_frotas, key="frota_selecionada")
+    if "reset_counter" not in st.session_state:
+        st.session_state["reset_counter"] = 0
+
+    f = st.selectbox("Frota", lista_frotas, key=f"frota_{st.session_state['reset_counter']}")
 
     tipo_medicao = TIPOS.get(f, "H")          # pega do SharePoint
     unidade = "h" if tipo_medicao == "H" else "km"
@@ -300,8 +303,7 @@ with aba1:
                     }):
                         st.success("Registrado com sucesso!")
                         time.sleep(1)
-                        st.session_state["frota_selecionada"] = ""   # ← limpa o selectbox
-                        st.session_state["horimetro_final"] = 0.0    # ← limpa o horímetro
+                        st.session_state["reset_counter"] += 1   # ← força novo key no selectbox (limpa frota)
                         st.rerun()
 
 # ==================== ABAS 2 E 3 (inalteradas) ====================
