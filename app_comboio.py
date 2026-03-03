@@ -98,7 +98,7 @@ def carregar_tipos_medicao(token):
         for item in r.json().get("value", []):
             fields = item.get("fields", {})
             frota = fields.get("Title")
-            tipo = fields.get("TipoMedicao", "H")  # default = Horas se não tiver coluna ainda
+            tipo = fields.get("field_6", "H")  # ← CORRIGIDO: nome interno real da coluna TipoMedicao
             if frota:
                 tipos[frota] = "H" if tipo.upper() in ["H", "HORAS", "HORA"] else "KM"
     except:
@@ -243,7 +243,7 @@ with aba1:
 
         if diferenca > 0:
             st.success(f"✅ **{label_rodado}:** {diferenca:,.1f} {unidade}")
-            
+
             if tipo_medicao == "H" and ultima_data:
                 try:
                     agora = pd.Timestamp.now().tz_localize(None)
