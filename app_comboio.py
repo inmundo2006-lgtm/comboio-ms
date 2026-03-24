@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import time
 import os
 
@@ -20,6 +20,8 @@ ARQUIVO_LOGO = "logo_ms.png"
 ARQUIVO_VIDEO = "abertura.mp4"
 
 USUARIOS = st.secrets["usuarios"]
+
+TZ_LOCAL = timezone(timedelta(hours=-3))  # UTC-3 — Naviraí/MS
 
 # ==========================
 # FUNÇÕES
@@ -114,8 +116,13 @@ def preparar_dataframe(dados_sp):
     for col in colunas:
         if col not in df.columns:
             df[col] = 0
-    df['Data_Dt'] = pd.to_datetime(df['Created'], errors='coerce').dt.date
-    df['Hora'] = pd.to_datetime(df['Created'], errors='coerce').dt.strftime('%H:%M')
+
+    # ✅ CORRIGIDO: converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
+    dt_utc = pd.to_datetime(df['Created'], errors='coerce', utc=True)
+    dt_local = dt_utc.dt.tz_convert(TZ_LOCAL)
+    df['Data_Dt'] = dt_local.dt.date
+    df['Hora'] = dt_local.dt.strftime('%H:%M')
+
     for col in ['Litros', 'Horas_Motor', 'Comboio_Final', 'Comboio_Inicial', 'Entrada_Usina']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df
@@ -253,7 +260,8 @@ with aba1:
 
             if tipo_medicao == "H" and ultima_data:
                 try:
-                    agora = pd.Timestamp.now().tz_localize(None)
+                    # ✅ CORRIGIDO: usa horário local UTC-3 para comparação correta
+                    agora = pd.Timestamp.now(tz=TZ_LOCAL).tz_localize(None)
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
                     if diferenca > horas_reais + 6:  # tolerância de 6h
