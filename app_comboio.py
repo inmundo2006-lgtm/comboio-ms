@@ -54,8 +54,7 @@ def obter_token():
         return None
 
 def obter_dados_sharepoint(token, lista):
-    # ✅ CORRIGIDO: ordenar por Title (data/hora real) em vez de Created
-    url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items?expand=fields&$orderby=fields/Title asc&$top=2000"
+    url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items?expand=fields&$orderby=fields/Created desc&$top=2000"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.get(url, headers=headers)
@@ -118,7 +117,6 @@ def preparar_dataframe(dados_sp):
         if col not in df.columns:
             df[col] = 0
 
-    # ✅ converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
     dt_utc = pd.to_datetime(df['Created'], errors='coerce', utc=True)
     dt_local = dt_utc.dt.tz_convert(TZ_LOCAL)
     df['Data_Dt'] = dt_local.dt.date
@@ -134,8 +132,7 @@ def obter_ultimo_horimetro(df, frota):
     df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'] == 'Saida')].copy()
     if df_frota.empty:
         return 0.0, None
-    # ✅ CORRIGIDO: ordenar por Title (data/hora real) em vez de Created
-    df_frota = df_frota.sort_values(by='Title', ascending=False).iloc[0]
+    df_frota = df_frota.sort_values(by='Created', ascending=False).iloc[0]
     ultimo_h = float(df_frota['Horas_Motor'])
     ultima_data = pd.to_datetime(df_frota['Created'])
     return ultimo_h, ultima_data
@@ -210,8 +207,7 @@ if not df.empty and 'Tipo_Operacao' in df.columns:
     sai = df[df['Tipo_Operacao'] == 'Saida']['Litros'].sum()
     saldo = ent - sai
     try:
-        # ✅ CORRIGIDO: iloc[-1] pega o último da lista ordenada por Title asc
-        ult_fim = float(df.iloc[-1]['Comboio_Final'])
+        ult_fim = float(df.iloc[0]['Comboio_Final'])
     except:
         ult_fim = 0
 
