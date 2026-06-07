@@ -54,7 +54,8 @@ def obter_token():
         return None
 
 def obter_dados_sharepoint(token, lista):
-    url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items?expand=fields&$orderby=fields/Created desc&$top=2000"
+    # ✅ CORRIGIDO: ordenar por Title (data/hora real) em vez de Created
+    url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items?expand=fields&$orderby=fields/Title asc&$top=2000"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.get(url, headers=headers)
@@ -100,7 +101,7 @@ def carregar_tipos_medicao(token):
         for item in r.json().get("value", []):
             fields = item.get("fields", {})
             frota = fields.get("Title")
-            tipo = fields.get("field_6", "H")  # ← CORRIGIDO: nome interno real da coluna TipoMedicao
+            tipo = fields.get("field_6", "H")
             if frota:
                 tipos[frota] = "H" if tipo.upper() in ["H", "HORAS", "HORA"] else "KM"
     except:
@@ -117,7 +118,7 @@ def preparar_dataframe(dados_sp):
         if col not in df.columns:
             df[col] = 0
 
-    # ✅ CORRIGIDO: converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
+    # ✅ converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
     dt_utc = pd.to_datetime(df['Created'], errors='coerce', utc=True)
     dt_local = dt_utc.dt.tz_convert(TZ_LOCAL)
     df['Data_Dt'] = dt_local.dt.date
@@ -133,7 +134,8 @@ def obter_ultimo_horimetro(df, frota):
     df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'] == 'Saida')].copy()
     if df_frota.empty:
         return 0.0, None
-    df_frota = df_frota.sort_values(by='Created', ascending=False).iloc[0]
+    # ✅ CORRIGIDO: ordenar por Title (data/hora real) em vez de Created
+    df_frota = df_frota.sort_values(by='Title', ascending=False).iloc[0]
     ultimo_h = float(df_frota['Horas_Motor'])
     ultima_data = pd.to_datetime(df_frota['Created'])
     return ultimo_h, ultima_data
@@ -200,7 +202,7 @@ if not token:
 
 dados_sp = obter_dados_sharepoint(token, LISTA_ATUAL)
 df = preparar_dataframe(dados_sp)
-TIPOS = carregar_tipos_medicao(token)   # ← carrega automaticamente do SharePoint
+TIPOS = carregar_tipos_medicao(token)
 
 saldo, ult_fim = 0, 0
 if not df.empty and 'Tipo_Operacao' in df.columns:
@@ -208,7 +210,8 @@ if not df.empty and 'Tipo_Operacao' in df.columns:
     sai = df[df['Tipo_Operacao'] == 'Saida']['Litros'].sum()
     saldo = ent - sai
     try:
-        ult_fim = float(df.iloc[0]['Comboio_Final'])
+        # ✅ CORRIGIDO: iloc[-1] pega o último da lista ordenada por Title asc
+        ult_fim = float(df.iloc[-1]['Comboio_Final'])
     except:
         ult_fim = 0
 
@@ -226,7 +229,7 @@ with aba1:
 
     f = st.selectbox("Frota", lista_frotas, key=f"frota_{st.session_state['reset_counter']}")
 
-    tipo_medicao = TIPOS.get(f, "H")          # pega do SharePoint
+    tipo_medicao = TIPOS.get(f, "H")
     unidade = "h" if tipo_medicao == "H" else "km"
     label_anterior = "Horímetro Anterior da Frota" if tipo_medicao == "H" else "Odômetro Anterior da Frota"
     label_rodado = "Horas Rodadas" if tipo_medicao == "H" else "Quilômetros Rodados"
@@ -251,7 +254,6 @@ with aba1:
 
         diferenca = h - ultimo_h
 
-        # Validação do horímetro
         horimetro_invalido = False
         st.session_state["horimetro_invalido"] = False
 
@@ -260,11 +262,10 @@ with aba1:
 
             if tipo_medicao == "H" and ultima_data:
                 try:
-                    # ✅ CORRIGIDO: usa horário local UTC-3 para comparação correta
                     agora = pd.Timestamp.now(tz=TZ_LOCAL).tz_localize(None)
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
-                    if diferenca > horas_reais + 6:  # tolerância de 6h
+                    if diferenca > horas_reais + 6:
                         st.error(f"⚠️ **Favor conferir novamente!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento, mas o avanço informado foi de {diferenca:.1f}h.")
                         horimetro_invalido = True
                         st.session_state["horimetro_invalido"] = True
@@ -319,10 +320,9 @@ with aba1:
                     }):
                         st.success("Registrado com sucesso!")
                         time.sleep(1)
-                        st.session_state["reset_counter"] += 1   # ← força novo key no selectbox (limpa frota)
+                        st.session_state["reset_counter"] += 1
                         st.rerun()
 
-# ==================== ABAS 2 E 3 (inalteradas) ====================
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
     esp = CAPACIDADE_MAXIMA - saldo
