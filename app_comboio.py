@@ -54,13 +54,19 @@ def obter_token():
         return None
 
 def obter_dados_sharepoint(token, lista):
+    # ✅ CORRIGIDO: paginação completa — busca TODOS os registros sem limite
     url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items?expand=fields&$orderby=fields/Created desc&$top=2000"
     headers = {"Authorization": f"Bearer {token}"}
+    todos = []
     try:
-        r = requests.get(url, headers=headers)
-        return [item['fields'] for item in r.json().get('value', [])]
+        while url:
+            r = requests.get(url, headers=headers)
+            data = r.json()
+            todos += [item['fields'] for item in data.get('value', [])]
+            url = data.get('@odata.nextLink')  # segue para próxima página se existir
     except:
-        return []
+        pass
+    return todos
 
 def enviar_dados_sharepoint(token, lista, dados):
     url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{lista}/items"
@@ -100,7 +106,7 @@ def carregar_tipos_medicao(token):
         for item in r.json().get("value", []):
             fields = item.get("fields", {})
             frota = fields.get("Title")
-            tipo = fields.get("field_6", "H")
+            tipo = fields.get("field_6", "H")  # nome interno real da coluna TipoMedicao
             if frota:
                 tipos[frota] = "H" if tipo.upper() in ["H", "HORAS", "HORA"] else "KM"
     except:
@@ -117,6 +123,7 @@ def preparar_dataframe(dados_sp):
         if col not in df.columns:
             df[col] = 0
 
+    # converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
     dt_utc = pd.to_datetime(df['Created'], errors='coerce', utc=True)
     dt_local = dt_utc.dt.tz_convert(TZ_LOCAL)
     df['Data_Dt'] = dt_local.dt.date
