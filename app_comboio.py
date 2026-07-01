@@ -37,6 +37,14 @@ def prever_odometro_final(inicial, litros):
     soma = inicial + litros
     return soma - 100000 if soma > 99999 else soma
 
+def formatar_numero_br(valor, casas=0):
+    """Formata número no padrão brasileiro: ponto para milhar, vírgula para decimal (ex: 15.000,0)."""
+    try:
+        texto = f"{float(valor):,.{casas}f}"
+        return texto.replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return str(valor)
+
 @st.cache_data(ttl=60)
 def obter_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -242,7 +250,7 @@ with aba1:
     if f:
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.metric(f"**{label_anterior}**", f"{ultimo_h:,.1f} {unidade}")
+            st.metric(f"**{label_anterior}**", f"{formatar_numero_br(ultimo_h, 1)} {unidade}")
         with col2:
             if ultima_data:
                 st.caption(f"Último abastecimento: {ultima_data.strftime('%d/%m/%Y %H:%M')}")
@@ -261,7 +269,7 @@ with aba1:
         st.session_state["horimetro_invalido"] = False
 
         if diferenca > 0:
-            st.success(f"✅ **{label_rodado}:** {diferenca:,.1f} {unidade}")
+            st.success(f"✅ **{label_rodado}:** {formatar_numero_br(diferenca, 1)} {unidade}")
 
             if tipo_medicao == "H" and ultima_data:
                 try:
@@ -269,13 +277,13 @@ with aba1:
                     ultima_naive = ultima_data.tz_localize(None) if ultima_data.tz is not None else ultima_data
                     horas_reais = (agora - ultima_naive).total_seconds() / 3600
                     if diferenca > horas_reais + 6:
-                        st.error(f"⚠️ **Favor conferir novamente!** Apenas ~{horas_reais:.1f}h se passaram desde o último abastecimento, mas o avanço informado foi de {diferenca:.1f}h.")
+                        st.error(f"⚠️ **Favor conferir novamente!** Apenas ~{formatar_numero_br(horas_reais, 1)}h se passaram desde o último abastecimento, mas o avanço informado foi de {formatar_numero_br(diferenca, 1)}h.")
                         horimetro_invalido = True
                         st.session_state["horimetro_invalido"] = True
                 except:
                     pass
         elif diferenca < 0:
-            st.error(f"⚠️ **Valor abaixo do esperado!** Tem certeza? Se sim, justifique no campo Observação. (Diferença: {-diferenca:,.1f} {unidade})")
+            st.error(f"⚠️ **Valor abaixo do esperado!** Tem certeza? Se sim, justifique no campo Observação. (Diferença: {formatar_numero_br(-diferenca, 1)} {unidade})")
         else:
             st.info("Nenhum avanço registrado ainda")
 
@@ -303,7 +311,7 @@ with aba1:
             elif saldo <= 0:
                 st.error("Caminhao tanque sem estoque disponivel.")
             elif l > saldo:
-                st.error(f"Estoque insuficiente. Saldo atual: {saldo:.0f} L")
+                st.error(f"Estoque insuficiente. Saldo atual: {formatar_numero_br(saldo, 0)} L")
             elif l <= 0 or f_od <= 0:
                 st.error("Preencha os campos de litros e relógio final.")
             else:
@@ -329,7 +337,7 @@ with aba1:
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
     esp = CAPACIDADE_MAXIMA - saldo
-    st.info(f"Espaco disponivel no tanque: **{esp:,.0f} L**")
+    st.info(f"Espaco disponivel no tanque: **{formatar_numero_br(esp, 0)} L**")
     with st.form("f_ent", clear_on_submit=True):
         le = st.number_input("Quantidade Recebida (L)", min_value=0.0)
         o = st.text_input("Observacao / NF")
@@ -356,7 +364,7 @@ with aba3:
     cor = "#28a745" if saldo > 5000 else "#ffc107" if saldo > 2000 else "#dc3545"
     st.markdown(
         f'<div style="background-color:{cor};" class="card-stock">'
-        f'<h2>{saldo:,.0f} L</h2>Estoque Disponivel</div>',
+        f'<h2>{formatar_numero_br(saldo, 0)} L</h2>Estoque Disponivel</div>',
         unsafe_allow_html=True
     )
 
@@ -373,10 +381,10 @@ with aba3:
         div = s_mec - s_sis
 
         col1, col2 = st.columns(2)
-        col1.metric(f"Total Lancado ({ds.strftime('%d/%m')})", f"{s_sis:,.0f} L")
+        col1.metric(f"Total Lancado ({ds.strftime('%d/%m')})", f"{formatar_numero_br(s_sis, 0)} L")
         col2.metric(
             "Diferenca (Mecanico vs Sistema)",
-            f"{div:,.0f} L",
+            f"{formatar_numero_br(div, 0)} L",
             delta="Verificar" if abs(div) > 5 else "OK"
         )
 
