@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 import time
 import os
+import unicodedata
 
 # ==========================
 # CONFIGURAÇÕES
@@ -23,16 +24,21 @@ USUARIOS = st.secrets["usuarios"]
 
 TZ_LOCAL = timezone(timedelta(hours=-3))  # UTC-3 — Naviraí/MS
 
-# Nome(s) de frota considerados "Helicóptero" — ajuste para bater exatamente
-# com o(s) valor(es) cadastrados na lista de Frotas no SharePoint.
-FROTAS_HELICOPTERO = ["Helicóptero", "Helicoptero"]
+
+def _normalizar(texto):
+    """Remove acentos e caixa para comparação — 'Helicóptero', 'HELICOPTERO',
+    'helicoptero' etc. todos viram 'helicoptero'."""
+    if not texto:
+        return ""
+    texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('ASCII')
+    return texto.lower()
 
 
 def eh_helicoptero(frota):
-    """True se a frota selecionada for o helicóptero (abastecimento externo, fora do comboio)."""
-    if not frota:
-        return False
-    return frota.strip() in FROTAS_HELICOPTERO
+    """True se o NOME da frota contiver 'helicoptero' em qualquer lugar —
+    cobre casos como '2503 - HELICOPTERO BELL 407', não só o nome exato."""
+    return "helicoptero" in _normalizar(frota)
+
 
 
 # ==========================
