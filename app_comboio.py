@@ -290,9 +290,20 @@ with aba1:
 
     ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
 
+    origem_aeroporto = False
     if f and helicoptero:
-        st.info("✈️ Frota identificada como **Helicóptero** — abastecimento externo (fora do comboio). "
-                 "O lançamento não afeta o estoque do caminhão-tanque, mas as horas continuam sendo registradas.")
+        origem = st.radio(
+            "Origem do Abastecimento",
+            ["Tanque Base", "Aeroporto (Externo)"],
+            horizontal=True,
+            key="origem_helicoptero"
+        )
+        origem_aeroporto = (origem == "Aeroporto (Externo)")
+        if origem_aeroporto:
+            st.info("✈️ Abastecimento **externo** (fora da base) — não afeta o estoque do tanque base, "
+                     "mas as horas continuam sendo registradas normalmente.")
+        else:
+            st.info("⛽ Abastecimento no **tanque base** — desconta do estoque controlado aqui, igual ao dos caminhões.")
 
     if f:
         col1, col2 = st.columns([3, 1])
@@ -334,13 +345,13 @@ with aba1:
         else:
             st.info("Nenhum avanço registrado ainda")
 
-    if helicoptero:
+    if origem_aeroporto:
         # ------------------------------------------------------------
-        # Fluxo exclusivo do Helicóptero: abastecimento externo (aeroporto).
-        # Ao salvar, o app grava DOIS lançamentos que se anulam entre si
+        # Helicóptero abastecendo fora da base (ex: aeroporto). Ao salvar,
+        # o app grava DOIS lançamentos que se anulam entre si
         # (Entrada_Aeroporto + Saida_Aeroporto) — não usam Comboio_Inicial/
-        # Final e não passam pela checagem de saldo do comboio, já que os
-        # tipos são diferentes de 'Entrada'/'Saida'.
+        # Final e não passam pela checagem de saldo do tanque base, já que
+        # os tipos são diferentes de 'Entrada'/'Saida'.
         # ------------------------------------------------------------
         with st.form("f_saida_helicoptero", clear_on_submit=True):
             l = st.number_input("Litros Abastecidos (Aeroporto)", min_value=0.0, step=1.0)
@@ -421,7 +432,7 @@ with aba1:
                 elif st.session_state.get("horimetro_invalido", False):
                     st.error("Corrija o horímetro antes de salvar.")
                 elif saldo <= 0:
-                    st.error("Caminhao tanque sem estoque disponivel.")
+                    st.error("Tanque sem estoque disponivel.")
                 elif l > saldo:
                     st.error(f"Estoque insuficiente. Saldo atual: {formatar_numero_br(saldo, 0)} L")
                 elif l <= 0 or f_od <= 0:
