@@ -23,6 +23,18 @@ USUARIOS = st.secrets["usuarios"]
 
 TZ_LOCAL = timezone(timedelta(hours=-3))  # UTC-3 — Naviraí/MS
 
+# Nome(s) de frota considerados "Helicóptero" — ajuste para bater exatamente
+# com o(s) valor(es) cadastrados na lista de Frotas no SharePoint.
+FROTAS_HELICOPTERO = ["Helicóptero", "Helicoptero"]
+
+
+def eh_helicoptero(frota):
+    """True se a frota selecionada for o helicóptero (abastecimento externo, fora do comboio)."""
+    if not frota:
+        return False
+    return frota.strip() in FROTAS_HELICOPTERO
+
+
 # ==========================
 # FUNÇÕES
 # ==========================
@@ -91,6 +103,27 @@ def enviar_dados_sharepoint(token, lista, dados):
         st.error(f"Erro de conexao: {e}")
         return False
 
+def enviar_anexo_sharepoint(token, lista, frota, arquivo):
+    """Sobe a foto/PDF da nota fiscal para a biblioteca de documentos do site
+    (pasta NotasFiscais) e devolve a URL do arquivo, ou None se não houver
+    arquivo ou se o envio falhar (nesse caso o registro é salvo sem anexo)."""
+    if arquivo is None:
+        return None
+    try:
+        extensao = arquivo.name.split(".")[-1].lower()
+        nome_seguro = f"{lista}_{frota}_{datetime.now(TZ_LOCAL).strftime('%Y%m%d_%H%M%S')}.{extensao}"
+        nome_seguro = nome_seguro.replace(" ", "_")
+        url = f"{GRAPH_URL}/sites/{SITE_ID}/drive/root:/NotasFiscais/{nome_seguro}:/content"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"}
+        r = requests.put(url, headers=headers, data=arquivo.getvalue())
+        if r.ok:
+            return r.json().get("webUrl")
+        st.warning(f"Registro salvo, mas não foi possível enviar a nota fiscal ({r.status_code}).")
+        return None
+    except Exception as e:
+        st.warning(f"Registro salvo, mas houve erro ao enviar a nota fiscal: {e}")
+        return None
+
 @st.cache_data(ttl=300)
 def carregar_frotas(token):
     url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{LISTA_FROTAS_ID}/items?expand=fields&$top=5000"
@@ -125,11 +158,14 @@ def preparar_dataframe(dados_sp):
     colunas = ['Tipo_Operacao', 'Litros', 'Frota', 'Horas_Motor',
                'Comboio_Final', 'Comboio_Inicial', 'Created', 'Entrada_Usina', 'Observacao']
     if not dados_sp:
-        return pd.DataFrame(columns=colunas + ['Data_Dt', 'Hora'])
+        return pd.DataFrame(columns=colunas + ['NotaFiscal_URL', 'Data_Dt', 'Hora'])
     df = pd.DataFrame(dados_sp)
     for col in colunas:
         if col not in df.columns:
             df[col] = 0
+    if 'NotaFiscal_URL' not in df.columns:
+        df['NotaFiscal_URL'] = ""
+    df['NotaFiscal_URL'] = df['NotaFiscal_URL'].fillna("")
 
     # converte de UTC para UTC-3 (Naviraí/MS) antes de extrair data e hora
     dt_utc = pd.to_datetime(df['Created'], errors='coerce', utc=True)
@@ -144,7 +180,9 @@ def preparar_dataframe(dados_sp):
 def obter_ultimo_horimetro(df, frota):
     if df.empty or not frota:
         return 0.0, None
-    df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'] == 'Saida')].copy()
+    # Inclui também Saida_Aeroporto (abastecimento externo do helicóptero) para que
+    # o horímetro anterior reflita o último abastecimento, seja via comboio ou aeroporto.
+    df_frota = df[(df['Frota'] == frota) & (df['Tipo_Operacao'].isin(['Saida', 'Saida_Aeroporto']))].copy()
     if df_frota.empty:
         return 0.0, None
     df_frota = df_frota.sort_values(by='Created', ascending=False).iloc[0]
@@ -216,6 +254,10 @@ dados_sp = obter_dados_sharepoint(token, LISTA_ATUAL)
 df = preparar_dataframe(dados_sp)
 TIPOS = carregar_tipos_medicao(token)
 
+# Saldo do comboio: soma apenas 'Entrada' e 'Saida' (comparação exata de texto).
+# Os tipos 'Entrada_Aeroporto' e 'Saida_Aeroporto' (abastecimento externo do
+# helicóptero) NÃO entram nessa conta — é assim que o estoque do comboio fica
+# imune a esses lançamentos, sem precisar de nenhum filtro extra aqui.
 saldo, ult_fim = 0, 0
 if not df.empty and 'Tipo_Operacao' in df.columns:
     ent = df[df['Tipo_Operacao'] == 'Entrada']['Litros'].sum()
@@ -239,6 +281,7 @@ with aba1:
         st.session_state["reset_counter"] = 0
 
     f = st.selectbox("Frota", lista_frotas, key=f"frota_{st.session_state['reset_counter']}")
+    helicoptero = eh_helicoptero(f)
 
     tipo_medicao = TIPOS.get(f, "H")
     unidade = "h" if tipo_medicao == "H" else "km"
@@ -246,6 +289,10 @@ with aba1:
     label_rodado = "Horas Rodadas" if tipo_medicao == "H" else "Quilômetros Rodados"
 
     ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
+
+    if f and helicoptero:
+        st.info("✈️ Frota identificada como **Helicóptero** — abastecimento externo (fora do comboio). "
+                 "O lançamento não afeta o estoque do caminhão-tanque, mas as horas continuam sendo registradas.")
 
     if f:
         col1, col2 = st.columns([3, 1])
@@ -287,52 +334,121 @@ with aba1:
         else:
             st.info("Nenhum avanço registrado ainda")
 
-    with st.form("f_saida", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            l = st.number_input("Litros Abastecidos", min_value=0.0, step=1.0)
-        with c2:
-            st.info(f"Relogio Inicial: **{ult_fim:05.0f}**")
-            sug = prever_odometro_final(ult_fim, l)
-            st.caption(f"Sugestao Relogio: {sug:.0f}")
-            f_od = st.number_input("Relogio Final (Lido)", format="%.0f", min_value=0.0)
+    if helicoptero:
+        # ------------------------------------------------------------
+        # Fluxo exclusivo do Helicóptero: abastecimento externo (aeroporto).
+        # Ao salvar, o app grava DOIS lançamentos que se anulam entre si
+        # (Entrada_Aeroporto + Saida_Aeroporto) — não usam Comboio_Inicial/
+        # Final e não passam pela checagem de saldo do comboio, já que os
+        # tipos são diferentes de 'Entrada'/'Saida'.
+        # ------------------------------------------------------------
+        with st.form("f_saida_helicoptero", clear_on_submit=True):
+            l = st.number_input("Litros Abastecidos (Aeroporto)", min_value=0.0, step=1.0)
+            obs = st.text_area(
+                "Observacao",
+                placeholder="Ex: Abastecimento Aeroporto de Naviraí - NF 1234",
+                height=80
+            )
+            nf_arquivo = st.file_uploader("Nota Fiscal (foto ou PDF) — opcional", type=["jpg", "jpeg", "png", "pdf"])
 
-        obs = st.text_area(
-            "Observacao",
-            placeholder="Ex: Veiculo terceiro - Transportadora XYZ / Pagamento posterior...",
-            height=80
-        )
+            if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
+                if not f:
+                    st.error("Selecione uma frota valida.")
+                elif st.session_state.get("horimetro_invalido", False):
+                    st.error("Corrija o horímetro antes de salvar.")
+                elif l <= 0:
+                    st.error("Preencha o campo de litros.")
+                else:
+                    horimetro_final = st.session_state.get("horimetro_final", 0.0)
+                    obs_final = obs.strip()
 
-        if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
-            if not f:
-                st.error("Selecione uma frota valida.")
-            elif st.session_state.get("horimetro_invalido", False):
-                st.error("Corrija o horímetro antes de salvar.")
-            elif saldo <= 0:
-                st.error("Caminhao tanque sem estoque disponivel.")
-            elif l > saldo:
-                st.error(f"Estoque insuficiente. Saldo atual: {formatar_numero_br(saldo, 0)} L")
-            elif l <= 0 or f_od <= 0:
-                st.error("Preencha os campos de litros e relógio final.")
-            else:
-                horimetro_final = st.session_state.get("horimetro_final", 0.0)
-                obs_final = obs.strip()
+                    with st.spinner("Enviando..."):
+                        nf_url = enviar_anexo_sharepoint(token, LISTA_ATUAL, f, nf_arquivo)
 
-                with st.spinner("Enviando..."):
-                    if enviar_dados_sharepoint(token, LISTA_ATUAL, {
-                        "Title": f"Saida - {f}",
-                        "Tipo_Operacao": "Saida",
-                        "Frota": f,
-                        "Litros": l,
-                        "Horas_Motor": horimetro_final,
-                        "Comboio_Inicial": ult_fim,
-                        "Comboio_Final": f_od,
-                        "Observacao": obs_final
-                    }):
-                        st.success("Registrado com sucesso!")
-                        time.sleep(1)
-                        st.session_state["reset_counter"] += 1
-                        st.rerun()
+                        campos_entrada = {
+                            "Title": f"Entrada Aeroporto - {f}",
+                            "Tipo_Operacao": "Entrada_Aeroporto",
+                            "Frota": f,
+                            "Litros": l,
+                            "Observacao": obs_final
+                        }
+                        campos_saida = {
+                            "Title": f"Saida Aeroporto - {f}",
+                            "Tipo_Operacao": "Saida_Aeroporto",
+                            "Frota": f,
+                            "Litros": l,
+                            "Horas_Motor": horimetro_final,
+                            "Observacao": obs_final
+                        }
+                        if nf_url:
+                            campos_entrada["NotaFiscal_URL"] = nf_url
+                            campos_saida["NotaFiscal_URL"] = nf_url
+
+                        ok_entrada = enviar_dados_sharepoint(token, LISTA_ATUAL, campos_entrada)
+                        ok_saida = False
+                        if ok_entrada:
+                            ok_saida = enviar_dados_sharepoint(token, LISTA_ATUAL, campos_saida)
+
+                        if ok_entrada and ok_saida:
+                            st.success("Registrado com sucesso! (Entrada e Saída no estoque do Aeroporto)")
+                            time.sleep(1)
+                            st.session_state["reset_counter"] += 1
+                            st.rerun()
+                        elif ok_entrada and not ok_saida:
+                            st.warning("A Entrada foi registrada, mas houve falha ao registrar a Saída. "
+                                       "Verifique manualmente antes de tentar novamente, para não duplicar o lançamento.")
+    else:
+        with st.form("f_saida", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                l = st.number_input("Litros Abastecidos", min_value=0.0, step=1.0)
+            with c2:
+                st.info(f"Relogio Inicial: **{ult_fim:05.0f}**")
+                sug = prever_odometro_final(ult_fim, l)
+                st.caption(f"Sugestao Relogio: {sug:.0f}")
+                f_od = st.number_input("Relogio Final (Lido)", format="%.0f", min_value=0.0)
+
+            obs = st.text_area(
+                "Observacao",
+                placeholder="Ex: Veiculo terceiro - Transportadora XYZ / Pagamento posterior...",
+                height=80
+            )
+            nf_arquivo = st.file_uploader("Nota Fiscal (foto ou PDF) — opcional", type=["jpg", "jpeg", "png", "pdf"])
+
+            if st.form_submit_button("Salvar Registro", type="primary", use_container_width=True):
+                if not f:
+                    st.error("Selecione uma frota valida.")
+                elif st.session_state.get("horimetro_invalido", False):
+                    st.error("Corrija o horímetro antes de salvar.")
+                elif saldo <= 0:
+                    st.error("Caminhao tanque sem estoque disponivel.")
+                elif l > saldo:
+                    st.error(f"Estoque insuficiente. Saldo atual: {formatar_numero_br(saldo, 0)} L")
+                elif l <= 0 or f_od <= 0:
+                    st.error("Preencha os campos de litros e relógio final.")
+                else:
+                    horimetro_final = st.session_state.get("horimetro_final", 0.0)
+                    obs_final = obs.strip()
+
+                    with st.spinner("Enviando..."):
+                        nf_url = enviar_anexo_sharepoint(token, LISTA_ATUAL, f, nf_arquivo)
+                        campos = {
+                            "Title": f"Saida - {f}",
+                            "Tipo_Operacao": "Saida",
+                            "Frota": f,
+                            "Litros": l,
+                            "Horas_Motor": horimetro_final,
+                            "Comboio_Inicial": ult_fim,
+                            "Comboio_Final": f_od,
+                            "Observacao": obs_final
+                        }
+                        if nf_url:
+                            campos["NotaFiscal_URL"] = nf_url
+                        if enviar_dados_sharepoint(token, LISTA_ATUAL, campos):
+                            st.success("Registrado com sucesso!")
+                            time.sleep(1)
+                            st.session_state["reset_counter"] += 1
+                            st.rerun()
 
 with aba2:
     st.subheader("Carga do Tanque (Usina)")
@@ -341,16 +457,22 @@ with aba2:
     with st.form("f_ent", clear_on_submit=True):
         le = st.number_input("Quantidade Recebida (L)", min_value=0.0)
         o = st.text_input("Observacao / NF")
+        nf_arquivo_usina = st.file_uploader("Nota Fiscal (foto ou PDF) — opcional", type=["jpg", "jpeg", "png", "pdf"])
         if st.form_submit_button("Confirmar Entrada", use_container_width=True):
             if 0 < le <= esp:
-                if enviar_dados_sharepoint(token, LISTA_ATUAL, {
+                nf_url_usina = enviar_anexo_sharepoint(token, LISTA_ATUAL, "Usina", nf_arquivo_usina)
+                campos_usina = {
                     "Title": "Entrada",
                     "Tipo_Operacao": "Entrada",
                     "Litros": le,
                     "Entrada_Usina": le,
+                    "Observacao": o.strip(),
                     "Comboio_Inicial": ult_fim,
                     "Comboio_Final": ult_fim
-                }):
+                }
+                if nf_url_usina:
+                    campos_usina["NotaFiscal_URL"] = nf_url_usina
+                if enviar_dados_sharepoint(token, LISTA_ATUAL, campos_usina):
                     st.success("Estoque Atualizado!")
                     time.sleep(1)
                     st.rerun()
@@ -388,9 +510,67 @@ with aba3:
             delta="Verificar" if abs(div) > 5 else "OK"
         )
 
+        # Abastecimentos externos (helicóptero via aeroporto) do dia — exibidos à
+        # parte, apenas para conferência; não entram no Total Lançado/Diferença
+        # acima porque usam Tipo_Operacao diferente ('Saida_Aeroporto').
+        aeroporto_dia = df_d[df_d['Tipo_Operacao'] == 'Saida_Aeroporto']
+        if not aeroporto_dia.empty:
+            total_aero = aeroporto_dia['Litros'].sum()
+            st.caption(f"✈️ Abastecimentos via Aeroporto (Helicóptero) neste dia — não contam no estoque do comboio: "
+                       f"{formatar_numero_br(total_aero, 0)} L")
+
         if df_d.empty:
             st.info(f"Nenhum registro no dia {ds.strftime('%d/%m/%Y')}.")
         else:
             st.subheader("Relatorio de Movimentacao")
-            colunas_exibir = [c for c in ['Hora', 'Tipo_Operacao', 'Frota', 'Litros', 'Comboio_Inicial', 'Comboio_Final', 'Observacao'] if c in df_d.columns]
-            st.dataframe(df_d[colunas_exibir], use_container_width=True, hide_index=True)
+            colunas_exibir = [c for c in ['Hora', 'Tipo_Operacao', 'Frota', 'Litros', 'Comboio_Inicial', 'Comboio_Final', 'Observacao', 'NotaFiscal_URL'] if c in df_d.columns]
+            st.dataframe(
+                df_d[colunas_exibir],
+                use_container_width=True,
+                hide_index=True,
+                column_config={"NotaFiscal_URL": st.column_config.LinkColumn("Nota Fiscal", display_text="Abrir")}
+            )
+
+        # ==========================
+        # MÉDIA DE CONSUMO POR PERÍODO
+        # ==========================
+        st.divider()
+        st.subheader("Média de Consumo por Período (Litros/Hora)")
+
+        frotas_disponiveis = sorted([x for x in df['Frota'].dropna().unique().tolist() if x])
+        colf1, colf2, colf3 = st.columns([2, 1, 1])
+        with colf1:
+            frota_media = st.selectbox("Frota", ["Todas"] + frotas_disponiveis, key="frota_media")
+        with colf2:
+            data_ini_media = st.date_input("Data Inicial", datetime.today() - timedelta(days=7), key="data_ini_media")
+        with colf3:
+            data_fim_media = st.date_input("Data Final", datetime.today(), key="data_fim_media")
+
+        # Considera 'Saida' e 'Saida_Aeroporto' juntos: o combustível do
+        # helicóptero abastecido fora do comboio precisa entrar na média de
+        # litros/hora, mesmo não entrando no estoque do comboio.
+        df_periodo = df[
+            (df['Tipo_Operacao'].isin(['Saida', 'Saida_Aeroporto'])) &
+            (df['Data_Dt'] >= data_ini_media) &
+            (df['Data_Dt'] <= data_fim_media)
+        ].copy()
+        if frota_media != "Todas":
+            df_periodo = df_periodo[df_periodo['Frota'] == frota_media]
+        df_periodo = df_periodo.sort_values(by='Created')
+
+        if len(df_periodo) < 2:
+            st.info("Selecione um período com pelo menos 2 abastecimentos da frota para calcular a média.")
+        else:
+            litros_periodo = df_periodo['Litros'].sum()
+            horimetro_ini = float(df_periodo.iloc[0]['Horas_Motor'])
+            horimetro_fim = float(df_periodo.iloc[-1]['Horas_Motor'])
+            horas_rodadas = horimetro_fim - horimetro_ini
+
+            colm1, colm2, colm3, colm4 = st.columns(4)
+            colm1.metric("Litros no Período", f"{formatar_numero_br(litros_periodo, 0)} L")
+            colm2.metric("Horímetro Inicial", formatar_numero_br(horimetro_ini, 1))
+            colm3.metric("Horímetro Final", formatar_numero_br(horimetro_fim, 1))
+            if horas_rodadas > 0:
+                colm4.metric("Média L/h", formatar_numero_br(litros_periodo / horas_rodadas, 2))
+            else:
+                colm4.metric("Média L/h", "N/A")
