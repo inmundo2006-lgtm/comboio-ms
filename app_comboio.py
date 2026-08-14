@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import time
 import os
 import unicodedata
+import io
 
 # ==========================
 # CONFIGURAÇÕES
@@ -21,6 +22,23 @@ ARQUIVO_LOGO = "logo_ms.png"
 ARQUIVO_VIDEO = "abertura.mp4"
 
 USUARIOS = st.secrets["usuarios"]
+
+# ==========================
+# HORÍMETRO COMPARTILHADO ENTRE COMBOIOS
+# ==========================
+# Nomes internos (Graph API) das colunas NOVAS que precisam existir na lista
+# mestre de Frotas (LISTA_FROTAS_ID) — a mesma lista de onde já vem o dropdown
+# de frotas e o TipoMedicao (field_6). Se ao criar as colunas no SharePoint o
+# nome interno vier diferente do nome de exibição (como aconteceu com
+# TipoMedicao -> field_6), ajuste as duas constantes abaixo para o nome real
+# (confira em GET /sites/{site}/lists/{lista}/columns).
+COL_HORIMETRO_ATUAL = "HorasMotorAtual"
+COL_ORIGEM_ATUAL = "ComboioOrigemAtual"
+
+# Lista explícita (opcional) de todas as listas de comboio, para o relatório
+# consolidado. Se não existir em secrets.toml, é deduzida das listas usadas
+# pelos logins cadastrados em USUARIOS.
+LISTAS_COMBOIO_SECRET = st.secrets.get("LISTAS_COMBOIO")
 
 TZ_LOCAL = timezone(timedelta(hours=-3))  # UTC-3 — Naviraí/MS
 
@@ -184,6 +202,10 @@ def preparar_dataframe(dados_sp):
     return df
 
 def obter_ultimo_horimetro(df, frota):
+    """Horímetro anterior olhando SOMENTE o histórico da lista do comboio atual.
+    Mantido como fallback (frota nova, ou item ainda não migrado na lista mestre) —
+    o fluxo normal agora usa obter_horimetro_frota_sp(), que é compartilhado
+    entre todos os comboios."""
     if df.empty or not frota:
         return 0.0, None
     # Inclui também Saida_Aeroporto (abastecimento externo do helicóptero) para que
@@ -195,6 +217,95 @@ def obter_ultimo_horimetro(df, frota):
     ultimo_h = float(df_frota['Horas_Motor'])
     ultima_data = pd.to_datetime(df_frota['Created'])
     return ultimo_h, ultima_data
+
+def _escapar_odata(valor):
+    """Escapa aspas simples para uso seguro dentro de um $filter OData."""
+    return str(valor).replace("'", "''")
+
+def obter_horimetro_frota_sp(token, frota):
+    """Lê o horímetro ATUAL da frota na lista mestre de Frotas — compartilhado
+    entre TODOS os comboios, resolvendo o problema de horas 'congeladas' quando
+    mais de um comboio abastece a mesma frota.
+    Retorna (horas, comboio_origem, item_id, ultima_data) — horas=None se a
+    frota ainda não tiver horímetro registrado nessa lista (aí o app cai no
+    fallback local, obter_ultimo_horimetro)."""
+    if not frota:
+        return None, None, None, None
+    filtro = _escapar_odata(frota)
+    url = (f"{GRAPH_URL}/sites/{SITE_ID}/lists/{LISTA_FROTAS_ID}/items"
+           f"?expand=fields&$filter=fields/Title eq '{filtro}'")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly",
+    }
+    try:
+        r = requests.get(url, headers=headers)
+        itens = r.json().get("value", [])
+        if not itens:
+            return None, None, None, None
+        item = itens[0]
+        fields = item.get("fields", {})
+        item_id = item.get("id")
+        origem = fields.get(COL_ORIGEM_ATUAL)
+        modificado = item.get("lastModifiedDateTime")
+        ultima_data = None
+        if modificado:
+            try:
+                ultima_data = pd.to_datetime(modificado, utc=True).tz_convert(TZ_LOCAL)
+            except Exception:
+                ultima_data = None
+        horas_raw = fields.get(COL_HORIMETRO_ATUAL)
+        if horas_raw in (None, ""):
+            return None, origem, item_id, ultima_data
+        return float(horas_raw), origem, item_id, ultima_data
+    except Exception:
+        return None, None, None, None
+
+def atualizar_horimetro_frota_sp(token, frota, horas, comboio_origem):
+    """Grava o horímetro mais recente da frota na lista mestre (upsert por
+    Title). Deve ser chamada logo após CADA saída/abastecimento salvo com
+    sucesso, para que o próximo comboio a abastecer essa frota — seja qual
+    for — enxergue o valor certo."""
+    if not frota:
+        return False
+    _, _, item_id, _ = obter_horimetro_frota_sp(token, frota)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"fields": {COL_HORIMETRO_ATUAL: horas, COL_ORIGEM_ATUAL: comboio_origem}}
+    try:
+        if item_id:
+            url = f"{GRAPH_URL}/sites/{SITE_ID}/lists/{LISTA_FROTAS_ID}/items/{item_id}"
+            r = requests.patch(url, headers=headers, json=payload)
+            return r.ok
+        # Não deveria acontecer: toda frota do dropdown já vem dessa mesma
+        # lista (carregar_frotas), então o item sempre existe. Se cair aqui,
+        # a frota foi digitada fora do padrão — não criamos item novo sozinho.
+        return False
+    except Exception:
+        return False
+
+def obter_listas_comboio():
+    """Lista de todas as listas (unidades) de comboio no SharePoint, para o
+    relatório consolidado. Usa LISTAS_COMBOIO de secrets.toml se existir;
+    senão deduz das listas já usadas pelos logins cadastrados."""
+    if LISTAS_COMBOIO_SECRET:
+        return sorted(set(LISTAS_COMBOIO_SECRET))
+    return sorted(set(v["lista"] for v in USUARIOS.values()))
+
+@st.cache_data(ttl=180)
+def carregar_todas_listas_comboio(token):
+    """Lê e concatena o histórico de TODOS os comboios (todas as listas), cada
+    linha marcada com sua lista de origem. Uso exclusivo do relatório
+    consolidado (aba 'Relatório Geral') — não interfere no fluxo individual
+    de nenhum comboio, que continua lendo só a própria lista."""
+    frames = []
+    for nome_lista in obter_listas_comboio():
+        dados = obter_dados_sharepoint(token, nome_lista)
+        df_lista = preparar_dataframe(dados)
+        df_lista['Comboio_Lista'] = nome_lista
+        frames.append(df_lista)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 # ==========================
 # DESIGN + LOGIN
@@ -277,7 +388,7 @@ if not df.empty and 'Tipo_Operacao' in df.columns:
 # ==========================
 # ABAS
 # ==========================
-aba1, aba2, aba3 = st.tabs(["Abastecer", "Entrada Usina", "Fechamento"])
+aba1, aba2, aba3, aba4 = st.tabs(["Abastecer", "Entrada Usina", "Fechamento", "Relatório Geral"])
 
 with aba1:
     st.subheader("Registrar Saida")
@@ -294,7 +405,17 @@ with aba1:
     label_anterior = "Horímetro Anterior da Frota" if tipo_medicao == "H" else "Odômetro Anterior da Frota"
     label_rodado = "Horas Rodadas" if tipo_medicao == "H" else "Quilômetros Rodados"
 
-    ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
+    # Horímetro COMPARTILHADO entre todos os comboios: busca primeiro na lista
+    # mestre de Frotas (atualizada por qualquer comboio que abasteceu por
+    # último). Só cai no histórico local desta lista se a frota ainda não
+    # tiver um valor lá (ex.: antes da primeira sincronização).
+    horas_global, origem_global, _item_frota_id, data_global = obter_horimetro_frota_sp(token, f)
+    if horas_global is not None:
+        ultimo_h, ultima_data = horas_global, data_global
+        fonte_horimetro = origem_global or "outro comboio"
+    else:
+        ultimo_h, ultima_data = obter_ultimo_horimetro(df, f)
+        fonte_horimetro = NOME_UNIDADE
 
     origem_aeroporto = False
     if f and helicoptero:
@@ -318,6 +439,8 @@ with aba1:
         with col2:
             if ultima_data:
                 st.caption(f"Último abastecimento: {ultima_data.strftime('%d/%m/%Y %H:%M')}")
+            if horas_global is not None and fonte_horimetro != NOME_UNIDADE:
+                st.caption(f"📡 Atualizado por: **{fonte_horimetro}**")
 
         h = st.number_input(
             f"{label_anterior.replace('Anterior', 'Final (Atual)')}",
@@ -407,6 +530,7 @@ with aba1:
                             ok_saida = enviar_dados_sharepoint(token, LISTA_ATUAL, campos_saida)
 
                         if ok_entrada and ok_saida:
+                            atualizar_horimetro_frota_sp(token, f, horimetro_final, NOME_UNIDADE)
                             st.success("Registrado com sucesso! (Entrada e Saída no estoque do Aeroporto)")
                             time.sleep(1)
                             st.session_state["reset_counter"] += 1
@@ -462,6 +586,10 @@ with aba1:
                         if nf_url:
                             campos["NotaFiscal_URL"] = nf_url
                         if enviar_dados_sharepoint(token, LISTA_ATUAL, campos):
+                            # Atualiza o horímetro compartilhado para que qualquer
+                            # outro comboio que abasteça essa frota depois enxergue
+                            # este valor, e não um valor antigo/congelado.
+                            atualizar_horimetro_frota_sp(token, f, horimetro_final, NOME_UNIDADE)
                             st.success("Registrado com sucesso!")
                             time.sleep(1)
                             st.session_state["reset_counter"] += 1
@@ -591,3 +719,109 @@ with aba3:
                 colm4.metric("Média L/h", formatar_numero_br(litros_periodo / horas_rodadas, 2))
             else:
                 colm4.metric("Média L/h", "N/A")
+
+with aba4:
+    st.header("Relatório Geral — Todos os Comboios")
+    st.caption(
+        "Consolida o histórico de TODAS as listas de comboio (independente de qual "
+        "unidade abasteceu). Não interfere no fluxo individual de nenhum comboio — "
+        "é só leitura, sob demanda."
+    )
+
+    colg1, colg2, colg3 = st.columns([1, 1, 1])
+    with colg1:
+        data_ini_geral = st.date_input("Data Inicial", datetime.today() - timedelta(days=30), key="data_ini_geral")
+    with colg2:
+        data_fim_geral = st.date_input("Data Final", datetime.today(), key="data_fim_geral")
+    with colg3:
+        st.write("")
+        st.write("")
+        gerar = st.button("🔄 Gerar Relatório", use_container_width=True)
+
+    if gerar:
+        with st.spinner("Lendo todos os comboios..."):
+            df_geral = carregar_todas_listas_comboio(token)
+        st.session_state["df_geral_cache"] = df_geral
+
+    df_geral = st.session_state.get("df_geral_cache")
+
+    if df_geral is None:
+        st.info("Clique em **Gerar Relatório** para ler e consolidar os dados de todos os comboios.")
+    elif df_geral.empty:
+        st.warning("Nenhum dado encontrado nas listas de comboio configuradas.")
+    else:
+        if data_ini_geral > data_fim_geral:
+            st.error("Data Inicial não pode ser depois da Data Final.")
+        else:
+            df_periodo_geral = df_geral[
+                (df_geral['Tipo_Operacao'].isin(['Saida', 'Saida_Aeroporto'])) &
+                (df_geral['Data_Dt'] >= data_ini_geral) &
+                (df_geral['Data_Dt'] <= data_fim_geral)
+            ].copy()
+            df_periodo_geral = df_periodo_geral.sort_values(by='Created')
+
+            if df_periodo_geral.empty:
+                st.info("Nenhum abastecimento no período selecionado.")
+            else:
+                # --------------------------------------------------------
+                # Agregado diário: soma de litros por Dia + Frota, juntando
+                # abastecimentos de qualquer comboio que atendeu a frota.
+                # --------------------------------------------------------
+                df_diario = (
+                    df_periodo_geral
+                    .groupby(['Data_Dt', 'Frota'], as_index=False)['Litros']
+                    .sum()
+                    .rename(columns={'Litros': 'Litros_Dia'})
+                    .sort_values(['Data_Dt', 'Frota'])
+                )
+
+                # --------------------------------------------------------
+                # Resumo do período: por frota, soma de litros, soma de
+                # horas rodadas (horímetro final - inicial dentro do
+                # filtro) e média de litros/hora — juntando os
+                # abastecimentos de todos os comboios que atenderam a
+                # mesma frota nesse intervalo.
+                # --------------------------------------------------------
+                linhas_resumo = []
+                for frota, grupo in df_periodo_geral.groupby('Frota'):
+                    litros_total = grupo['Litros'].sum()
+                    if len(grupo) >= 2:
+                        horas_rodadas = float(grupo.iloc[-1]['Horas_Motor']) - float(grupo.iloc[0]['Horas_Motor'])
+                    else:
+                        horas_rodadas = 0.0
+                    media_lh = (litros_total / horas_rodadas) if horas_rodadas > 0 else None
+                    linhas_resumo.append({
+                        "Frota": frota,
+                        "Litros_Total": litros_total,
+                        "Horas_Rodadas": horas_rodadas,
+                        "Media_L_por_Hora": media_lh,
+                    })
+                df_resumo = pd.DataFrame(linhas_resumo).sort_values("Frota")
+
+                st.subheader(f"Agregado Diário ({data_ini_geral.strftime('%d/%m')} a {data_fim_geral.strftime('%d/%m')})")
+                st.dataframe(df_diario, use_container_width=True, hide_index=True)
+
+                st.subheader("Resumo do Período por Frota")
+                st.dataframe(
+                    df_resumo.style.format({
+                        "Litros_Total": lambda v: formatar_numero_br(v, 0),
+                        "Horas_Rodadas": lambda v: formatar_numero_br(v, 1),
+                        "Media_L_por_Hora": lambda v: formatar_numero_br(v, 2) if pd.notna(v) else "N/A",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_diario.to_excel(writer, sheet_name='Agregado_Diario', index=False)
+                    df_resumo.to_excel(writer, sheet_name='Resumo_Periodo', index=False)
+                buffer.seek(0)
+
+                st.download_button(
+                    "📥 Baixar Excel (Agregado Diário + Resumo do Período)",
+                    data=buffer,
+                    file_name=f"Relatorio_Comboios_{data_ini_geral.strftime('%Y%m%d')}_{data_fim_geral.strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
