@@ -215,7 +215,11 @@ def obter_ultimo_horimetro(df, frota):
         return 0.0, None
     df_frota = df_frota.sort_values(by='Created', ascending=False).iloc[0]
     ultimo_h = float(df_frota['Horas_Motor'])
-    ultima_data = pd.to_datetime(df_frota['Created'])
+    # ✅ CORRIGIDO: Created vem em UTC da Graph API — precisa converter para
+    # Brasília (TZ_LOCAL), igual já é feito em preparar_dataframe() e em
+    # obter_horimetro_frota_sp(). Sem isso, a hora exibida e o cálculo de
+    # "horas_reais" ficavam 3h adiantados.
+    ultima_data = pd.to_datetime(df_frota['Created'], utc=True).tz_convert(TZ_LOCAL)
     return ultimo_h, ultima_data
 
 def _escapar_odata(valor):
